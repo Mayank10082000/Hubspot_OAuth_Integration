@@ -26,7 +26,7 @@ authorization_url = f'https://app.hubspot.com/oauth/authorize?client_id={CLIENT_
 
 encoded_client_id_secret = base64.b64encode(f'{CLIENT_ID}:{CLIENT_SECRET}'.encode()).decode()
 
-scope = 'crm.objects.contacts.read'
+scope = 'crm.objects.contacts.read crm.objects.contacts.write'
 
 async def authorize_hubspot(user_id, org_id):
     state_data = {
