@@ -2,6 +2,7 @@
 
 import json
 import secrets
+import hashlib
 from fastapi import Request, HTTPException
 from fastapi.responses import HTMLResponse
 import httpx
@@ -25,11 +26,9 @@ authorization_url = f'https://app.hubspot.com/oauth/authorize?client_id={CLIENT_
 
 encoded_client_id_secret = base64.b64encode(f'{CLIENT_ID}:{CLIENT_SECRET}'.encode()).decode()
 
-# Define the scopes needed for the integration
-scope = 'crm.objects.contacts.read crm.objects.contacts.write'
+scope = 'crm.objects.contacts.read'
 
 async def authorize_hubspot(user_id, org_id):
-    # Create a unique state value to prevent CSRF attacks
     state_data = {
         'state': secrets.token_urlsafe(32),
         'user_id': user_id,
@@ -52,11 +51,8 @@ async def authorize_hubspot(user_id, org_id):
     return auth_url
 
 async def oauth2callback_hubspot(request: Request):
-    # Check for error response
     if request.query_params.get('error'):
         raise HTTPException(status_code=400, detail=request.query_params.get('error_description'))
-    
-    # Get code and state from query parameters
     code = request.query_params.get('code')
     encoded_state = request.query_params.get('state')
     state_data = json.loads(base64.urlsafe_b64decode(encoded_state).decode('utf-8'))
@@ -65,19 +61,16 @@ async def oauth2callback_hubspot(request: Request):
     user_id = state_data.get('user_id')
     org_id = state_data.get('org_id')
     
-    # Retrieve saved state from Redis
     saved_state, code_verifier = await asyncio.gather(
         get_value_redis(f'hubspot_state:{org_id}:{user_id}'),
-        get_value_redis(f'hubspot_verfier:{org_id}:{user_id}'),
+        get_value_redis(f'hubspot_verifier:{org_id}:{user_id}'),
     )
     
-    # Validate the state to prevent CSRF attacks
     if not saved_state or original_state != json.loads(saved_state).get('state'):
         raise HTTPException(status_code=400, detail='State does not match.')
     
-    # Exchange code for access token
     async with httpx.AsyncClient() as client:
-        response, _ = await asyncio.gather(
+        response, _, _ = await asyncio.gather(
             client.post(
                 'https://api.hubapi.com/oauth/v1/token',
                 data={
@@ -85,10 +78,10 @@ async def oauth2callback_hubspot(request: Request):
                     'client_id': CLIENT_ID,
                     'client_secret': CLIENT_SECRET,
                     'redirect_uri': REDIRECT_URI,
-                    'code_verifier': code_verifier.decode('utf-8'),
+                    'code': code,
+                    'code_verifier': code_verifier.decode('utf-8') if isinstance(code_verifier, bytes) else code_verifier,
                 },
                 headers={
-                    'Authorization': f'Basic {encoded_client_id_secret}',
                     'Content-Type': 'application/x-www-form-urlencoded',
                 }
             ),
@@ -96,14 +89,12 @@ async def oauth2callback_hubspot(request: Request):
             delete_key_redis(f'hubspot_verifier:{org_id}:{user_id}'),
         )
     
-    # Store credentials in Redis
     await add_key_value_redis(
         f'hubspot_credentials:{org_id}:{user_id}', 
         json.dumps(response.json()), 
         expire=600
     )
     
-    # Return HTML to close the popup window
     close_window_script = """
     <html>
         <script>
@@ -124,66 +115,57 @@ async def get_hubspot_credentials(user_id, org_id):
     return credentials
 
 def create_integration_item_metadata_object(
-        response_json: str, item_type: str, parent_id=None, parent_name=None
+    response_json: dict, item_type: str
 ) -> IntegrationItem:
-    parent_id = None if parent_id is None else parent_id + '_Contacts'
+    properties = response_json.get('properties', {})
+    first_name = properties.get('firstname', '')
+    last_name = properties.get('lastname', '')
+    name = f"{first_name} {last_name}".strip()
+    if not name:
+        name = f"Contact {response_json.get('id')}"
+    
     integration_item_metadata = IntegrationItem(
-        id = response_json.get('id', None) + '_' + item_type,
-        name = response_json.get('name', None),
-        type = item_type,
-        parent_id = parent_id,
-        parent_path_or_name = parent_name,
+        id=response_json.get('id'),
+        name=name,
+        type=item_type,
     )
-
+    
     return integration_item_metadata
-   
+
 def fetch_items(
-        access_token: str, url: str, aggregated_response: list, offset: None
-) -> dict:
-    params = {'offset': offset} if offset is not None else {}
-    headers = {'authorization': f'Bearer {access_token}'}
+    access_token: str, url: str, aggregated_response: list, after=None
+) -> None:
+    """Fetching the list of contacts"""
+    params = {'after': after} if after is not None else {}
+    headers = {'Authorization': f'Bearer {access_token}'}
     response = requests.get(url, headers=headers, params=params)
 
     if response.status_code == 200:
-        results = response.json().get('contacts', {})
-        offset = response.json().get('offset', None)
+        data = response.json()
+        results = data.get('results', [])
         
         for item in results:
             aggregated_response.append(item)
-
-        if offset is not None:
-            fetch_items(access_token, url, aggregated_response, offset)
-        else:
-            return
-    
+        
+        paging = data.get('paging', {})
+        if paging and 'next' in paging and paging.get('next', {}).get('after'):
+            after = paging['next']['after']
+            fetch_items(access_token, url, aggregated_response, after)
+        
+    else:
+        print(f"Error fetching data: {response.status_code} - {response.text}")
 
 async def get_items_hubspot(credentials) -> list[IntegrationItem]:
     credentials = json.loads(credentials)
-    url = 'https://hubspot.com/v0/meta/contacts'
+    url = 'https://api.hubapi.com/crm/v3/objects/contacts'
     list_of_integration_item_metadata = []
     list_of_responses = []
 
     fetch_items(credentials.get('access_token'), url, list_of_responses)
     for response in list_of_responses:
         list_of_integration_item_metadata.append(
-            create_integration_item_metadata_object(response, 'Contacts')
+            create_integration_item_metadata_object(response, 'Contact')
         )
-
-        tables_response = requests.get(
-            f'https://api.hubspot.com/v0/meta/contacts/{response.get("id")}/tables',
-            headers={'Authorization': f'Bearer {credentials.get("access_token")}'},
-        )
-
-        if tables_response.status_code == 200:
-            tables_response = tables_response.json()
-            for table in tables_response['tables']:
-                list_of_integration_item_metadata.append(
-                    create_integration_item_metadata_object(
-                        table,
-                        'Table',
-                        response.get('id', None),
-                        response.get('name', None)
-                    )
-                )
+    
     print(f'list_of_integration_item_metadata: {list_of_integration_item_metadata}')
     return list_of_integration_item_metadata
