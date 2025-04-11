@@ -14,12 +14,8 @@ from integrations.integration_item import IntegrationItem
 
 from redis_client import add_key_value_redis, get_value_redis, delete_key_redis
 
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-CLIENT_ID = os.getenv("HUBSPOT_CLIENT_ID")
-CLIENT_SECRET = os.getenv("HUBSPOT_CLIENT_SECRET")
+CLIENT_ID = '49034b82-d989-4889-99f9-82fac15d83bd'
+CLIENT_SECRET = 'f3731867-1e12-4a9e-a4e6-9912a0b1702a'
 
 REDIRECT_URI = 'http://localhost:8000/integrations/hubspot/oauth2callback'
 authorization_url = f'https://app.hubspot.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}'
