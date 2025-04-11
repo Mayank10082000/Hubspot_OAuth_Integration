@@ -26,7 +26,7 @@ authorization_url = f'https://app.hubspot.com/oauth/authorize?client_id={CLIENT_
 encoded_client_id_secret = base64.b64encode(f'{CLIENT_ID}:{CLIENT_SECRET}'.encode()).decode()
 
 # Define the scopes needed for the integration
-scope = 'crm.objects.contacts.read crm.objects.contacts.write crm.objects.companies.read crm.objects.companies.write crm.objects.deals.read crm.objects.deals.write'
+scope = 'crm.objects.contacts.read crm.objects.contacts.write'
 
 async def authorize_hubspot(user_id, org_id):
     # Create a unique state value to prevent CSRF attacks
