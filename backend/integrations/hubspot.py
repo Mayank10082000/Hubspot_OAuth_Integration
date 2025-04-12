@@ -131,7 +131,6 @@ def create_integration_item_metadata_object(
 def fetch_items(
     access_token: str, url: str, aggregated_response: list, after=None
 ) -> None:
-    """Fetching the list of contacts"""
     params = {'after': after} if after is not None else {}
     headers = {'Authorization': f'Bearer {access_token}'}
     response = requests.get(url, headers=headers, params=params)
